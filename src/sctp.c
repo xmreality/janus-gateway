@@ -43,7 +43,7 @@ cd /path/to/sctp
 const char *debug_folder = "/path/to/sctp";
 #endif
 
-static const char *default_label = "JanusDataChannel";
+static const char *default_label = "control-channel";
 
 
 #define SCTP_MAX_PACKET_SIZE (1<<16)
