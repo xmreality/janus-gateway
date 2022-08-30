@@ -1398,6 +1398,9 @@ janus_ice_handle *janus_ice_handle_create(void *core_session, const char *opaque
 	handle->app_handle = NULL;
 	handle->queued_candidates = g_async_queue_new();
 	handle->queued_packets = g_async_queue_new();
+	/* XMReality change begin */
+	mdestimator_create(&(handle->estimator));
+	/* XMReality change end */
 	janus_mutex_init(&handle->mutex);
 	janus_session_handles_insert(session, handle);
 	return handle;
@@ -1573,6 +1576,11 @@ gint janus_ice_handle_destroy(void *core_session, janus_ice_handle *handle) {
 		janus_text2pcap_close(handle->text2pcap);
 		g_clear_pointer(&handle->text2pcap, janus_text2pcap_free);
 	}
+	/* XMReality change begin */
+	if (handle->estimator) {
+		mdestimator_destroy(handle->estimator);
+	}
+	/* XMReality change end */
 	/* We only actually destroy the handle later */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Handle detached, scheduling destruction\n", handle->handle_id);
 	/* Unref the handle: we only unref the session too when actually freeing the handle, so that it is freed before that */
@@ -3134,6 +3142,19 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 				if(bitrate > 0)
 					pc->remb_bitrate = bitrate;
 
+				/* XMReality change begin */
+				if (rtcp_ctx && rtcp_ctx->num_feedback_datas > 0) {
+					mdestimator_received_feedback(pc->handle->estimator,
+												  rtcp_ctx->num_feedback_datas,
+												  rtcp_ctx->twcc_feedback_sequence_numbers,
+												  rtcp_ctx->twcc_feedback_timestamps,
+												  janus_get_timeofday_us());
+
+					pc->twcc_estimated_bitrate = mdestimator_get_target_bitrate(pc->handle->estimator);
+					rtcp_ctx->num_feedback_datas = 0;
+				}
+				/* XMReality change end */
+
 				/* Now let's see if there are any NACKs to handle */
 				gint64 now = janus_get_monotonic_time();
 				GSList *nacks = janus_rtcp_get_nacks(buf, buflen);
@@ -3236,6 +3257,10 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 					/* a re-negotation has been concluded. */
 					return;
 				}
+
+				/* XMReality change begin */
+				mdestimator_update_rtt(pc->handle->estimator, janus_get_timeofday_us(), rtcp_ctx->rtt);
+				/* XMReality change end */
 
 				janus_plugin_rtcp rtcp = { .mindex = medium->mindex, .video = video, .buffer = buf, .length = buflen };
 				janus_plugin *plugin = (janus_plugin *)handle->app;
@@ -4740,6 +4765,10 @@ static gboolean janus_ice_outgoing_traffic_handle(janus_ice_handle *handle, janu
 				if(sent < pkt->length) {
 					JANUS_LOG(LOG_ERR, "[%"SCNu64"] ... only sent %d bytes? (was %d)\n", handle->handle_id, sent, pkt->length);
 				}
+				/* XMReality change begin */
+				mdestimator_sent_packet(handle->estimator, handle->pc->transport_wide_cc_out_seq_num, pkt->length,
+					janus_get_timeofday_us(), header->markerbit == 1 ? 1 : 0, 1, 0);
+				/* XMReality change end */
 			} else {
 				/* Prune/update/set RTP extensions */
 				janus_ice_rtp_extension_update(handle, medium, pkt);
@@ -4884,6 +4913,12 @@ static gboolean janus_ice_outgoing_traffic_handle(janus_ice_handle *handle, janu
 									rtcp_ctx->tb = clock_rate;
 							}
 						}
+
+						/* XMReality change begin */
+						mdestimator_sent_packet(handle->estimator, handle->pc->transport_wide_cc_out_seq_num,
+							pkt->length, janus_get_timeofday_us(), header->markerbit == 1 ? 1 : 0,
+							pkt->retransmission ? 1 : 0, 0);
+						/* XMReality change end */
 					}
 					if(medium->nack_queue_ms > 0 && !pkt->retransmission) {
 						/* Save the packet for retransmissions that may be needed later */

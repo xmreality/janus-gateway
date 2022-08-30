@@ -19,6 +19,9 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <inttypes.h>
+/* XMReality change begin */
+#include <sys/time.h>
+/* XMReality change end */
 
 #include <zlib.h>
 #include <openssl/rand.h>
@@ -36,6 +39,14 @@ gint64 janus_get_monotonic_time(void) {
 	clock_gettime (CLOCK_MONOTONIC, &ts);
 	return (ts.tv_sec*G_GINT64_CONSTANT(1000000)) + (ts.tv_nsec/G_GINT64_CONSTANT(1000));
 }
+
+/* XMReality change begin */
+guint64 janus_get_timeofday_us(void) {
+	struct timeval now;
+	gettimeofday(&now, NULL);
+	return (uint64_t)now.tv_sec * G_GUINT64_CONSTANT(1000000) + (uint64_t)now.tv_usec;
+}
+/* XMReality change end */
 
 gint64 janus_get_real_time(void) {
 	struct timespec ts;

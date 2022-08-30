@@ -226,109 +226,115 @@ static void janus_rtcp_incoming_sr(janus_rtcp_context *ctx, janus_rtcp_sr *sr) {
 	ctx->lsr = (ntp >> 16);
 }
 
+/* XMReality change begin */
+static uint8_t get1(const uint8_t *data,size_t i) { return data[i]; }
+static uint32_t get2(const uint8_t *data,size_t i) { return (uint32_t)(data[i+1]) | ((uint32_t)(data[i]))<<8; }
+static uint32_t get3(const uint8_t *data,size_t i) { return (uint32_t)(data[i+2]) | ((uint32_t)(data[i+1]))<<8 | ((uint32_t)(data[i]))<<16; }
+/* XMReality change end */
+
 /* Helper to handle an incoming transport-cc feedback: triggered by a call to janus_rtcp_fix_ssrc a valid context pointer */
 static void janus_rtcp_incoming_transport_cc(janus_rtcp_context *ctx, janus_rtcp_fb *twcc, int total) {
-	if(ctx == NULL || twcc == NULL || total < 20)
+	/* XMReality change begin */
+	if (ctx == NULL || twcc == NULL || total < 20) {
 		return;
-	if(!janus_rtcp_check_fci((janus_rtcp_header *)twcc, total, 4))
+	}
+	if (!janus_rtcp_check_fci((janus_rtcp_header *) twcc, total, 4)) {
 		return;
-	/* Parse the header first */
-	uint8_t *data = (uint8_t *)twcc->fci;
-	uint16_t base_seq = 0, status_count = 0;
-	uint32_t reference = 0;
-	uint8_t fb_pkt = 0;
-	memcpy(&base_seq, data, sizeof(uint16_t));
-	base_seq = ntohs(base_seq);
-	memcpy(&status_count, data+2, sizeof(uint16_t));
-	status_count = ntohs(status_count);
-	memcpy(&reference, data+4, sizeof(uint32_t));
-	reference = ntohl(reference) >> 8;
-	fb_pkt = *(data+7);
-	JANUS_LOG(LOG_HUGE, "[TWCC] seq=%"SCNu16", psc=%"SCNu16", ref=%"SCNu32", fbpc=%"SCNu8"\n",
-		base_seq, status_count, reference, fb_pkt);
-	/* Now traverse the feedback: packet chunks first, and then recv deltas */
-	total -= 20;
-	data += 8;
-	uint16_t psc = status_count;
-	uint16_t chunk = 0;
-	uint8_t t = 0, ss = 0, s = 0, length = 0;
-	/* Iterate on all packet chunks */
-	JANUS_LOG(LOG_HUGE, "[TWCC] Chunks:\n");
-	uint16_t num = 0;
-	GList *list = NULL;
-	while(psc > 0 && total > 1) {
-		num++;
-		memcpy(&chunk, data, sizeof(uint16_t));
-		chunk = ntohs(chunk);
-		t = (chunk & 0x8000) >> 15;
-		if(t == 0) {
-			/* Run length */
-			s = (chunk & 0x6000) >> 13;
-			length = (chunk & 0x1FFF);
-			JANUS_LOG(LOG_HUGE, "  [%"SCNu16"] t=run-length, s=%s, l=%"SCNu8"\n", num,
-				janus_rtp_packet_status_description(s), length);
-			while(length > 0 && psc > 0) {
-				list = g_list_prepend(list, GUINT_TO_POINTER(s));
-				length--;
-				psc--;
+	}
+
+	uint8_t *data = (uint8_t *) twcc->fci;
+	uint32_t size = total;
+
+	if (size < 8) {
+		return;
+	}
+
+	uint8_t statuses[256];
+
+	uint32_t base_seq_number = get2(data, 0);
+	uint16_t packet_status_count = get2(data, 2);
+	uint64_t reference_time = get3(data, 4);
+
+	uint32_t len = 8;
+	uint8_t num = 0;
+	ctx->num_feedback_datas = 0;
+
+	while (num < packet_status_count) {
+		if (len + 2 > size) {
+			return;
+		}
+
+		uint16_t chunk = get2(data, len);
+		len += 2;
+
+		if (chunk >> 15) {
+			if (chunk >> 14 & 1) {
+				for (uint32_t j = 0; j < 7; ++j) {
+					uint8_t status = (uint8_t) ((chunk >> 2 * (7 - 1 - j)) & 0x03);
+					statuses[num] = status;
+					num++;
+				}
+			} else {
+				for (uint32_t j = 0; j < 14; ++j) {
+					uint8_t status = (uint8_t) ((chunk >> (14 - 1 - j)) & 0x01);
+					statuses[num] = status;
+					num++;
+				}
 			}
 		} else {
-			/* Status vector */
-			ss = (chunk & 0x4000) >> 14;
-			length = (ss ? 7 : 14);
-			JANUS_LOG(LOG_HUGE, "  [%"SCNu16"] t=status-vector, ss=%ss, l=%"SCNu8"\n", num,
-				ss ? "2-bit" : "bit", length);
-			while(length > 0 && psc > 0) {
-				if(!ss)
-					s = (chunk & (1 << (length-1))) ? janus_rtp_packet_status_smalldelta : janus_rtp_packet_status_notreceived;
-				else
-					s = (chunk & (3 << (2*length-2))) >> (2*length-2);
-				list = g_list_prepend(list, GUINT_TO_POINTER(s));
-				length--;
-				psc--;
+			uint8_t status = (uint8_t) (chunk >> 13);
+			uint16_t run = chunk & 0x1FFF;
+			for (uint16_t j = 0; j < run; ++j) {
+				statuses[num] = status;
+				num++;
 			}
 		}
-		total -= 2;
-		data += 2;
 	}
-	if(psc > 0) {
-		/* Incomplete feedback? Drop... */
-		g_list_free(list);
-		return;
-	}
-	list = g_list_reverse(list);
-	/* Iterate on all recv deltas */
-	JANUS_LOG(LOG_HUGE, "[TWCC] Recv Deltas (%d/%"SCNu16"):\n", g_list_length(list), status_count);
-	num = 0;
-	uint16_t delta = 0;
-	uint32_t delta_us = 0;
-	GList *iter = list;
-	while(iter != NULL && total > 0) {
-		num++;
-		delta = 0;
-		s = GPOINTER_TO_UINT(iter->data);
-		if(s == janus_rtp_packet_status_smalldelta) {
-			/* Small delta = 1 byte */
-			delta = *data;
-			total--;
-			data++;
-		} else if(s == janus_rtp_packet_status_largeornegativedelta) {
-			/* Large or negative delta = 2 bytes */
-			if(total < 2)
+
+	uint64_t time = reference_time * 64000;
+	for (uint32_t i = 0; i < packet_status_count; ++i) {
+		switch (statuses[i]) {
+			case janus_rtp_packet_status_notreceived:
+				ctx->twcc_feedback_sequence_numbers[ctx->num_feedback_datas] = base_seq_number + i;
+				ctx->twcc_feedback_timestamps[ctx->num_feedback_datas] = 0;
+				ctx->num_feedback_datas++;
 				break;
-			memcpy(&delta, data, sizeof(uint16_t));
-			delta = ntohs(delta);
-			total -= 2;
-			data += 2;
+			case janus_rtp_packet_status_smalldelta: {
+				if (len + 1 > size) {
+					return;
+				}
+
+				int32_t delta = get1(data, len) * 250;
+				time += delta;
+				len += 1;
+
+				ctx->twcc_feedback_sequence_numbers[ctx->num_feedback_datas] = base_seq_number + i;
+				ctx->twcc_feedback_timestamps[ctx->num_feedback_datas] = time;
+				ctx->num_feedback_datas++;
+				break;
+			}
+			case janus_rtp_packet_status_largeornegativedelta: {
+				if (len + 2 > size) {
+					return;
+				}
+
+				int16_t aux = (int16_t) get2(data, len);
+				int32_t delta = aux * 250;
+				len += 2;
+				time += delta;
+
+				ctx->twcc_feedback_sequence_numbers[ctx->num_feedback_datas] = base_seq_number + i;
+				ctx->twcc_feedback_timestamps[ctx->num_feedback_datas] = time;
+				ctx->num_feedback_datas++;
+				break;
+			}
+			case janus_rtp_packet_status_reserved:
+				break;
+			default:
+				break;
 		}
-		delta_us = delta*250;
-		/* Print summary */
-		JANUS_LOG(LOG_HUGE, "  [%02"SCNu16"][%"SCNu16"] %s (%"SCNu32"us)\n", num, (uint16_t)(base_seq+num-1),
-			janus_rtp_packet_status_description(s), delta_us);
-		iter = iter->next;
 	}
-	/* TODO Update the context with the feedback we got */
-	g_list_free(list);
+	/* XMReality change end */
 }
 
 /* Link quality estimate filter coefficient */
