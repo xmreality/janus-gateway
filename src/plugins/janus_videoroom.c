@@ -3294,6 +3294,10 @@ static janus_videoroom_subscriber_stream *janus_videoroom_subscriber_stream_add_
 					stream->sim_context.substream_target = 2;
 					stream->sim_context.templayer_target = 2;
 				}
+				/* XMReality change begin */
+				stream->estimate_state_change_timestamp = janus_get_monotonic_time();
+				stream->estimate_state_change_complete = FALSE;
+				/* XMReality change end */
 				janus_vp8_simulcast_context_reset(&stream->vp8_context);
 				if(ps->svc) {
 					/* This stream belongs to a room where VP9 SVC has been enabled,
