@@ -3259,7 +3259,7 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 				}
 
 				/* XMReality change begin */
-				mdestimator_update_rtt(pc->handle->estimator, janus_get_timeofday_us(), rtcp_ctx->rtt);
+				mdestimator_update_rtt(pc->handle->estimator, janus_get_timeofday_us(), rtt);
 				/* XMReality change end */
 
 				janus_plugin_rtcp rtcp = { .mindex = medium->mindex, .video = video, .buffer = buf, .length = buflen };
