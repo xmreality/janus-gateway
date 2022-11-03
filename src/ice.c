@@ -1351,9 +1351,6 @@ janus_ice_handle *janus_ice_handle_create(void *core_session, const char *opaque
 	handle->app_handle = NULL;
 	handle->queued_candidates = g_async_queue_new();
 	handle->queued_packets = g_async_queue_new();
-	/* XMReality change begin */
-	mdestimator_create(&(handle->estimator));
-	/* XMReality change end */
 	janus_mutex_init(&handle->mutex);
 	janus_session_handles_insert(session, handle);
 	return handle;
@@ -1529,11 +1526,6 @@ gint janus_ice_handle_destroy(void *core_session, janus_ice_handle *handle) {
 		janus_text2pcap_close(handle->text2pcap);
 		g_clear_pointer(&handle->text2pcap, janus_text2pcap_free);
 	}
-	/* XMReality change begin */
-	if (handle->estimator) {
-		mdestimator_destroy(handle->estimator);
-	}
-	/* XMReality change end */
 	/* We only actually destroy the handle later */
 	JANUS_LOG(LOG_VERB, "[%"SCNu64"] Handle detached, scheduling destruction\n", handle->handle_id);
 	/* Unref the handle: we only unref the session too when actually freeing the handle, so that it is freed before that */
@@ -1942,41 +1934,19 @@ janus_slow_link_update(janus_ice_peerconnection_medium *medium, janus_ice_handle
 	/* We keep the counters in different janus_ice_stats objects, depending on the direction */
 	gboolean video = (medium->type == JANUS_MEDIA_VIDEO);
 	guint sl_lost_last_count = uplink ? medium->in_stats.sl_lost_count : medium->out_stats.sl_lost_count;
+
 	guint sl_lost_recently = (lost >= sl_lost_last_count) ? (lost - sl_lost_last_count) : 0;
-	if(slowlink_threshold > 0 && sl_lost_recently >= slowlink_threshold) {
+	if (video && uplink && slowlink_threshold > 0 && sl_lost_recently >= slowlink_threshold) {
+		JANUS_LOG(LOG_INFO, "[%"SCNu64"] sl_lost_recently >= slowlink_threshold\n", handle->handle_id);
+
 		/* Tell the plugin */
-		janus_plugin *plugin = (janus_plugin *)handle->app;
-		if(plugin && plugin->slow_link && janus_plugin_session_is_alive(handle->app_handle) &&
-				!g_atomic_int_get(&handle->destroyed))
+		janus_plugin* plugin = (janus_plugin*)handle->app;
+		if (plugin && plugin->slow_link && janus_plugin_session_is_alive(handle->app_handle) &&
+				!g_atomic_int_get(&handle->destroyed)) {
 			plugin->slow_link(handle->app_handle, medium->mindex, video, uplink);
-		/* Notify the user/application too */
-		janus_session *session = (janus_session *)handle->session;
-		if(session != NULL) {
-			json_t *event = json_object();
-			json_object_set_new(event, "janus", json_string("slowlink"));
-			json_object_set_new(event, "session_id", json_integer(session->session_id));
-			json_object_set_new(event, "sender", json_integer(handle->handle_id));
-			if(opaqueid_in_api && handle->opaque_id != NULL)
-				json_object_set_new(event, "opaque_id", json_string(handle->opaque_id));
-			json_object_set_new(event, "mid", json_string(medium->mid));
-			json_object_set_new(event, "media", json_string(video ? "video" : "audio"));
-			json_object_set_new(event, "uplink", uplink ? json_true() : json_false());
-			json_object_set_new(event, "lost", json_integer(sl_lost_recently));
-			/* Send the event */
-			JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-			janus_session_notify_event(session, event);
-			/* Finally, notify event handlers */
-			if(janus_events_is_enabled()) {
-				json_t *info = json_object();
-				json_object_set_new(info, "mid", json_string(medium->mid));
-				json_object_set_new(info, "media", json_string(video ? "video" : "audio"));
-				json_object_set_new(info, "slow_link", json_string(uplink ? "uplink" : "downlink"));
-				json_object_set_new(info, "lost_lastsec", json_integer(sl_lost_recently));
-				janus_events_notify_handlers(JANUS_EVENT_TYPE_MEDIA, JANUS_EVENT_SUBTYPE_MEDIA_SLOWLINK,
-					session->session_id, handle->handle_id, handle->opaque_id, info);
-			}
 		}
 	}
+
 	/* Update the counter */
 	if(uplink) {
 		medium->in_stats.sl_lost_count = lost;
@@ -3083,19 +3053,6 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 				if(bitrate > 0)
 					pc->remb_bitrate = bitrate;
 
-				/* XMReality change begin */
-				if (rtcp_ctx && rtcp_ctx->num_feedback_datas > 0) {
-					mdestimator_received_feedback(pc->handle->estimator,
-												  rtcp_ctx->num_feedback_datas,
-												  rtcp_ctx->twcc_feedback_sequence_numbers,
-												  rtcp_ctx->twcc_feedback_timestamps,
-												  janus_get_timeofday_us());
-
-					pc->twcc_estimated_bitrate = mdestimator_get_target_bitrate(pc->handle->estimator);
-					rtcp_ctx->num_feedback_datas = 0;
-				}
-				/* XMReality change end */
-
 				/* Now let's see if there are any NACKs to handle */
 				gint64 now = janus_get_monotonic_time();
 				GSList *nacks = janus_rtcp_get_nacks(buf, buflen);
@@ -3198,10 +3155,6 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 					/* a re-negotation has been concluded. */
 					return;
 				}
-
-				/* XMReality change begin */
-				mdestimator_update_rtt(pc->handle->estimator, janus_get_timeofday_us(), rtt);
-				/* XMReality change end */
 
 				janus_plugin_rtcp rtcp = { .mindex = medium->mindex, .video = video, .buffer = buf, .length = buflen };
 				janus_plugin *plugin = (janus_plugin *)handle->app;
@@ -4692,10 +4645,6 @@ static gboolean janus_ice_outgoing_traffic_handle(janus_ice_handle *handle, janu
 				if(sent < pkt->length) {
 					JANUS_LOG(LOG_ERR, "[%"SCNu64"] ... only sent %d bytes? (was %d)\n", handle->handle_id, sent, pkt->length);
 				}
-				/* XMReality change begin */
-				mdestimator_sent_packet(handle->estimator, handle->pc->transport_wide_cc_out_seq_num, pkt->length,
-					janus_get_timeofday_us(), header->markerbit == 1 ? 1 : 0, 1, 0);
-				/* XMReality change end */
 			} else {
 				/* Prune/update/set RTP extensions */
 				janus_ice_rtp_extension_update(handle, medium, pkt);
@@ -4840,12 +4789,6 @@ static gboolean janus_ice_outgoing_traffic_handle(janus_ice_handle *handle, janu
 									rtcp_ctx->tb = clock_rate;
 							}
 						}
-
-						/* XMReality change begin */
-						mdestimator_sent_packet(handle->estimator, handle->pc->transport_wide_cc_out_seq_num,
-							pkt->length, janus_get_timeofday_us(), header->markerbit == 1 ? 1 : 0,
-							pkt->retransmission ? 1 : 0, 0);
-						/* XMReality change end */
 					}
 					if(medium->nack_queue_ms > 0 && !pkt->retransmission) {
 						/* Save the packet for retransmissions that may be needed later */

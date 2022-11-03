@@ -1619,11 +1619,6 @@ static struct janus_json_parameter create_parameters[] = {
 	{"videoorient_ext", JANUS_JSON_BOOL, 0},
 	{"playoutdelay_ext", JANUS_JSON_BOOL, 0},
 	{"transport_wide_cc_ext", JANUS_JSON_BOOL, 0},
-	/* XMReality change begin */
-	{"twcc_simulcast_switching", JANUS_JSON_BOOL, 0},
-	{"twcc_simulcast_switching_bw_2", JSON_INTEGER, 0},
-	{"twcc_simulcast_switching_bw_1", JSON_INTEGER, 0},
-	/* XMReality change end */
 	{"record", JANUS_JSON_BOOL, 0},
 	{"rec_dir", JSON_STRING, 0},
 	{"lock_record", JANUS_JSON_BOOL, 0},
@@ -2030,11 +2025,6 @@ typedef struct janus_videoroom {
 	gboolean videoorient_ext;	/* Whether the video-orientation extension must be negotiated or not for new publishers */
 	gboolean playoutdelay_ext;	/* Whether the playout-delay extension must be negotiated or not for new publishers */
 	gboolean transport_wide_cc_ext;	/* Whether the transport wide cc extension must be negotiated or not for new publishers */
-	/* XMReality change begin */
-	gboolean twcc_simulcast_switching;
-	int twcc_simulcast_switching_bw_2;
-	int twcc_simulcast_switching_bw_1;
-	/* XMReality change end */
 	gboolean record;			/* Whether the feeds from publishers in this room should be recorded */
 	char *rec_dir;				/* Where to save the recordings of this room, if enabled */
 	gboolean lock_record;		/* Whether recording state can only be changed providing the room secret */
@@ -2216,11 +2206,6 @@ typedef struct janus_videoroom_subscriber {
 	volatile gint destroyed;
 	janus_refcount ref;
 } janus_videoroom_subscriber;
-
-/* XMReality change begin */
-#define ESTIMATE_STATE_CHANGE_TIME 10000000LL
-/* XMReality change end */
-
 /* Each VideoRoom subscriber can be subscribed to multiple streams, belonging to
  * the same or different publishers: as such, each stream is its own structure */
 typedef struct janus_videoroom_subscriber_stream {
@@ -2247,12 +2232,9 @@ typedef struct janus_videoroom_subscriber_stream {
 	janus_rtp_svc_context svc_context;
 	/* Playout delays to enforce when relaying this stream, if the extension has been negotiated */
 	int16_t min_delay, max_delay;
+	int64_t simulcast_change_delay_time;
 	volatile gint ready, destroyed;
 	janus_refcount ref;
-	/* XMReality change begin */
-	int64_t estimate_state_change_timestamp;
-	gboolean estimate_state_change_complete;
-	/* XMReality change end */
 } janus_videoroom_subscriber_stream;
 
 typedef struct janus_videoroom_rtp_relay_packet {
@@ -2920,15 +2902,12 @@ static janus_videoroom_subscriber_stream *janus_videoroom_subscriber_stream_add(
 	stream->sim_context.substream_target = 2;
 	stream->sim_context.templayer_target = 2;
 	janus_vp8_simulcast_context_reset(&stream->vp8_context);
+
 	janus_rtp_svc_context_reset(&stream->svc_context);
 	stream->svc_context.spatial_target = 2;	/* FIXME Actually depends on the scalabilityMode */
 	stream->svc_context.temporal_target = 2;	/* FIXME Actually depends on the scalabilityMode */
-
-	/* XMReality change begin */
-	stream->estimate_state_change_timestamp = janus_get_monotonic_time();
-	stream->estimate_state_change_complete = FALSE;
-	/* XMReality change end */
-
+	
+	stream->simulcast_change_delay_time = janus_get_monotonic_time();
 	janus_mutex_lock(&ps->subscribers_mutex);
 	ps->subscribers = g_slist_append(ps->subscribers, stream);
 	/* The two streams reference each other */
@@ -2983,16 +2962,13 @@ static janus_videoroom_subscriber_stream *janus_videoroom_subscriber_stream_add_
 					stream->sim_context.substream_target = 2;
 					stream->sim_context.templayer_target = 2;
 				}
-				/* XMReality change begin */
-				stream->estimate_state_change_timestamp = janus_get_monotonic_time();
-				stream->estimate_state_change_complete = FALSE;
-				/* XMReality change end */
 				janus_vp8_simulcast_context_reset(&stream->vp8_context);
 				if(ps->svc) {
 					janus_rtp_svc_context_reset(&stream->svc_context);
 					stream->svc_context.spatial_target = 2;		/* FIXME Actually depends on the scalabilityMode */
 					stream->svc_context.temporal_target = 2;	/* FIXME Actually depends on the scalabilityMode */
 				}
+				stream->simulcast_change_delay_time = janus_get_monotonic_time();
 				janus_mutex_lock(&ps->subscribers_mutex);
 				if(g_slist_find(ps->subscribers, stream) == NULL && g_slist_find(stream->publisher_streams, ps) == NULL) {
 					ps->subscribers = g_slist_append(ps->subscribers, stream);
@@ -3307,11 +3283,6 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 			janus_config_item *videoorient_ext = janus_config_get(config, cat, janus_config_type_item, "videoorient_ext");
 			janus_config_item *playoutdelay_ext = janus_config_get(config, cat, janus_config_type_item, "playoutdelay_ext");
 			janus_config_item *transport_wide_cc_ext = janus_config_get(config, cat, janus_config_type_item, "transport_wide_cc_ext");
-			/* XMReality change begin */
-			janus_config_item *twcc_simulcast_switching = janus_config_get(config, cat, janus_config_type_item, "twcc_simulcast_switching");
-			janus_config_item *twcc_simulcast_switching_bw_2 = janus_config_get(config, cat, janus_config_type_item, "twcc_simulcast_switching_bw_2");
-			janus_config_item *twcc_simulcast_switching_bw_1 = janus_config_get(config, cat, janus_config_type_item, "twcc_simulcast_switching_bw_1");
-			/* XMReality change end */
 			janus_config_item *notify_joining = janus_config_get(config, cat, janus_config_type_item, "notify_joining");
 			janus_config_item *req_e2ee = janus_config_get(config, cat, janus_config_type_item, "require_e2ee");
 			janus_config_item *dummy_pub = janus_config_get(config, cat, janus_config_type_item, "dummy_publisher");
@@ -3510,20 +3481,6 @@ int janus_videoroom_init(janus_callbacks *callback, const char *config_path) {
 			videoroom->transport_wide_cc_ext = TRUE;
 			if(transport_wide_cc_ext != NULL && transport_wide_cc_ext->value != NULL)
 				videoroom->transport_wide_cc_ext = janus_is_true(transport_wide_cc_ext->value);
-			/* XMReality change begin */
-			videoroom->twcc_simulcast_switching = FALSE;
-			if(twcc_simulcast_switching != NULL && twcc_simulcast_switching->value != NULL) {
-				videoroom->twcc_simulcast_switching = janus_is_true(twcc_simulcast_switching->value);
-			}
-			videoroom->twcc_simulcast_switching_bw_2 = 2600000;
-			if(twcc_simulcast_switching_bw_2 != NULL && twcc_simulcast_switching_bw_2->value != NULL) {
-				videoroom->twcc_simulcast_switching_bw_2 = atoi(twcc_simulcast_switching_bw_2->value);
-			}
-			videoroom->twcc_simulcast_switching_bw_1 = 600000;
-			if(twcc_simulcast_switching_bw_1 != NULL && twcc_simulcast_switching_bw_1->value != NULL) {
-				videoroom->twcc_simulcast_switching_bw_1 = atoi(twcc_simulcast_switching_bw_1->value);
-			}
-			/* XMReality change end */
 			if(record && record->value) {
 				videoroom->record = janus_is_true(record->value);
 			}
@@ -4344,11 +4301,6 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		json_t *videoorient_ext = json_object_get(root, "videoorient_ext");
 		json_t *playoutdelay_ext = json_object_get(root, "playoutdelay_ext");
 		json_t *transport_wide_cc_ext = json_object_get(root, "transport_wide_cc_ext");
-		/* XMReality change begin */
-		json_t *twcc_simulcast_switching = json_object_get(root, "twcc_simulcast_switching");
-		json_t *twcc_simulcast_switching_bw_2 = json_object_get(root, "twcc_simulcast_switching_bw_2");
-		json_t *twcc_simulcast_switching_bw_1 = json_object_get(root, "twcc_simulcast_switching_bw_1");
-		/* XMReality change end */
 		json_t *notify_joining = json_object_get(root, "notify_joining");
 		json_t *record = json_object_get(root, "record");
 		json_t *rec_dir = json_object_get(root, "rec_dir");
@@ -4581,19 +4533,6 @@ static json_t *janus_videoroom_process_synchronous_request(janus_videoroom_sessi
 		videoroom->videoorient_ext = videoorient_ext ? json_is_true(videoorient_ext) : TRUE;
 		videoroom->playoutdelay_ext = playoutdelay_ext ? json_is_true(playoutdelay_ext) : TRUE;
 		videoroom->transport_wide_cc_ext = transport_wide_cc_ext ? json_is_true(transport_wide_cc_ext) : TRUE;
-		/* XMReality change begin */
-		videoroom->twcc_simulcast_switching = twcc_simulcast_switching ? json_is_true(twcc_simulcast_switching) : TRUE;
-		if(json_integer_value(twcc_simulcast_switching_bw_2) > 0) {
-			videoroom->twcc_simulcast_switching_bw_2 = json_integer_value(twcc_simulcast_switching_bw_2);
-		} else {
-			videoroom->twcc_simulcast_switching_bw_2 = 2600000;
-		}
-		if(json_integer_value(twcc_simulcast_switching_bw_1) > 0) {
-			videoroom->twcc_simulcast_switching_bw_1 = json_integer_value(twcc_simulcast_switching_bw_1);
-		} else {
-			videoroom->twcc_simulcast_switching_bw_1 = 600000;
-		}
-		/* XMReality change end */
 		/* By default, the VideoRoom plugin does not notify about participants simply joining the room.
 		   It only notifies when the participant actually starts publishing media. */
 		videoroom->notify_joining = notify_joining ? json_is_true(notify_joining) : FALSE;
@@ -8229,50 +8168,6 @@ void janus_videoroom_incoming_rtcp(janus_plugin_session *handle, janus_plugin_rt
 		if(bitrate > 0) {
 			/* FIXME We got a REMB from this subscriber, should we do something about it? */
 		}
-		/* XMReality change begin */
-		if (s->room->twcc_simulcast_switching) {
-			int64_t now = janus_get_monotonic_time();
-			int32_t estimate = (int32_t) gateway->get_estimate(handle);
-
-			if (now - ss->estimate_state_change_timestamp >= ESTIMATE_STATE_CHANGE_TIME &&
-				ss->estimate_state_change_complete == FALSE) {
-				if (estimate < s->room->twcc_simulcast_switching_bw_1 && ss->sim_context.substream_target != 0) {
-					ss->sim_context.substream_target = 0;
-					janus_videoroom_reqpli(ps, "Simulcasting substream change estimate based");
-					ss->estimate_state_change_timestamp = now;
-					ss->estimate_state_change_complete = TRUE;
-
-					JANUS_LOG(LOG_INFO,
-							  "Estimate complete, substream_target %u, substream %u\n",
-							  ss->sim_context.substream_target, ss->sim_context.substream);
-
-				} else if (estimate >= s->room->twcc_simulcast_switching_bw_1 &&
-						   estimate < s->room->twcc_simulcast_switching_bw_2 && ss->sim_context.substream_target != 1) {
-					ss->sim_context.substream_target = 1;
-					janus_videoroom_reqpli(ps, "Simulcasting substream change estimate based");
-					ss->estimate_state_change_timestamp = now;
-					ss->estimate_state_change_complete = TRUE;
-
-					JANUS_LOG(LOG_INFO,
-							  "Estimate complete, substream_target %u, substream %u\n",
-							  ss->sim_context.substream_target, ss->sim_context.substream);
-
-				} else if (estimate >= s->room->twcc_simulcast_switching_bw_2) {
-					ss->estimate_state_change_timestamp = now;
-					ss->estimate_state_change_complete = TRUE;
-
-					JANUS_LOG(LOG_INFO,
-							  "Estimate complete, substream_target %u, substream %u\n",
-							  ss->sim_context.substream_target, ss->sim_context.substream);
-				}
-			}
-
-			JANUS_LOG(LOG_INFO,
-					  "Subscriber estimate %u, substream_target %u, substream %u\n",
-					  estimate,
-					  ss->sim_context.substream_target, ss->sim_context.substream);
-		}
-		/* XMReality change end */
 		janus_refcount_decrease_nodebug(&ps->ref);
 		janus_refcount_decrease_nodebug(&s->ref);
 	}
@@ -8434,6 +8329,35 @@ void janus_videoroom_slow_link(janus_plugin_session *handle, int mindex, gboolea
 				janus_refcount_decrease(&session->ref);
 				return;
 			}
+
+			janus_mutex_lock(&subscriber->streams_mutex);
+			GList* streams_itr = subscriber->streams;
+			int64_t now = janus_get_monotonic_time();
+			while (streams_itr) {
+				janus_videoroom_subscriber_stream* ss = (janus_videoroom_subscriber_stream*)streams_itr->data;
+				gboolean changed = FALSE;
+				if (ss && (now - ss->simulcast_change_delay_time) > 10000000LL) {
+					if (ss->sim_context.substream_target == 2) {
+						ss->sim_context.substream_target = 1;
+						changed = TRUE;
+						JANUS_LOG(LOG_INFO, "slow_link, substream %u, substream_target %u\n", ss->sim_context.substream, ss->sim_context.substream_target);
+					} else if (ss->sim_context.substream_target == 1) {
+						ss->sim_context.substream_target = 0;
+						changed = TRUE;
+						JANUS_LOG(LOG_INFO, "slow_link, substream %u, substream_target %u\n", ss->sim_context.substream, ss->sim_context.substream_target);
+					}
+
+					if (changed) {
+						janus_videoroom_publisher_stream* ps = ss->publisher_streams ? ss->publisher_streams->data : NULL;
+						if (ps) {
+							janus_videoroom_reqpli(ps, "Simulcasting substream change estimate based");
+						}
+					}
+				}
+				streams_itr = streams_itr->next;
+			}
+			janus_mutex_unlock(&subscriber->streams_mutex);
+
 			/* Send an event on the handle to notify the application: it's
 			 * up to the application to then choose a policy and enforce it */
 			json_t *event = json_object();
@@ -11356,6 +11280,7 @@ static void *janus_videoroom_handler(void *data) {
 					janus_rtp_svc_context_reset(&stream->svc_context);
 					stream->svc_context.spatial_target = 2;		/* FIXME Actually depends on the scalabilityMode */
 					stream->svc_context.temporal_target = 2;	/* FIXME Actually depends on the scalabilityMode */
+					stream->simulcast_change_delay_time = janus_get_monotonic_time();
 					janus_mutex_unlock(&ps->subscribers_mutex);
 					janus_videoroom_reqpli(ps, "Subscriber switch");
 					if(unref)

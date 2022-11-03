@@ -280,11 +280,6 @@ typedef struct rtcp_context
 	double out_media_link_quality;
 
 	/* TODO Incoming transport-wide CC feedback*/
-	/* XMReality change begin */
-	uint32_t twcc_feedback_sequence_numbers[256];
-	uint64_t twcc_feedback_timestamps[256];
-	uint8_t num_feedback_datas;
-	/* XMReality change end */
 
 } rtcp_context;
 typedef rtcp_context janus_rtcp_context;
