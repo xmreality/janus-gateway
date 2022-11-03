@@ -33,9 +33,7 @@
 #include "ip-utils.h"
 #include "refcount.h"
 #include "plugins/plugin.h"
-/* XMReality change begin */
-#include <mdestimator/mdestimator.h>
-/* XMReality change end */
+
 
 /*! \brief ICE stuff initialization
  * @param[in] ice_lite Whether the ICE Lite mode should be enabled or not
@@ -404,10 +402,6 @@ struct janus_ice_handle {
 	volatile gint destroyed;
 	/*! \brief Reference counter for this instance */
 	janus_refcount ref;
-	/* XMReality change begin */
-	/*! \brief Sender side bandwidth estimator for this instance */
-	struct Estimator *estimator;
-	/* XMReality change end */
 };
 
 /*! \brief Janus handle WebRTC PeerConnection */
@@ -474,10 +468,6 @@ struct janus_ice_peerconnection {
 	GSList *transport_wide_received_seq_nums;
 	/*! \brief Latest REMB feedback we received */
 	uint32_t remb_bitrate;
-	/* XMReality change begin */
-	/*! \brief Latest calculated sender bandwidth estimate */
-	uint32_t twcc_estimated_bitrate;
-	/* XMReality change end */
 	/*! \brief DTLS role of the server for this stream */
 	janus_dtls_role dtls_role;
 	/*! \brief Data exchanged for DTLS handshakes and messages */

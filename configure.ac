@@ -366,10 +366,6 @@ esac
 PKG_CHECK_MODULES([JANUS],"$PKGCHECKMODULES")
 
 JANUS_MANUAL_LIBS="${JANUS_MANUAL_LIBS} -lm"
-# XMReality change begin
-JANUS_MANUAL_LIBS="${JANUS_MANUAL_LIBS} -lmdestimator"
-# XMReality change end
-
 AC_SUBST(JANUS_MANUAL_LIBS)
 
 AS_IF([test "x${boringssl_dir}" != "x"],
