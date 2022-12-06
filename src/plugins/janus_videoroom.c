@@ -2321,6 +2321,7 @@ typedef struct janus_videoroom_subscriber_stream {
 	int temporal_layer, target_temporal_layer;
 	/* Playout delays to enforce when relaying this stream, if the extension has been negotiated */
 	int16_t min_delay, max_delay;
+	int64_t simulcast_change_delay_time;
 	volatile gint ready, destroyed;
 	janus_refcount ref;
 } janus_videoroom_subscriber_stream;
@@ -3218,6 +3219,7 @@ static janus_videoroom_subscriber_stream *janus_videoroom_subscriber_stream_add(
 	stream->target_spatial_layer = 1;		/* FIXME Chrome sends 0 and 1 */
 	stream->temporal_layer = -1;
 	stream->target_temporal_layer = 2;	/* FIXME Chrome sends 0, 1 and 2 */
+	stream->simulcast_change_delay_time = janus_get_monotonic_time();
 	janus_mutex_lock(&ps->subscribers_mutex);
 	ps->subscribers = g_slist_append(ps->subscribers, stream);
 	/* The two streams reference each other */
@@ -3280,6 +3282,7 @@ static janus_videoroom_subscriber_stream *janus_videoroom_subscriber_stream_add_
 					stream->temporal_layer = -1;
 					stream->target_temporal_layer = 2;	/* FIXME Chrome sends 0, 1 and 2 */
 				}
+				stream->simulcast_change_delay_time = janus_get_monotonic_time();
 				janus_mutex_lock(&ps->subscribers_mutex);
 				if(g_slist_find(ps->subscribers, stream) == NULL && g_slist_find(stream->publisher_streams, ps) == NULL) {
 					ps->subscribers = g_slist_append(ps->subscribers, stream);
@@ -8761,6 +8764,35 @@ void janus_videoroom_slow_link(janus_plugin_session *handle, int mindex, gboolea
 				janus_refcount_decrease(&session->ref);
 				return;
 			}
+
+			janus_mutex_lock(&subscriber->streams_mutex);
+			GList* streams_itr = subscriber->streams;
+			int64_t now = janus_get_monotonic_time();
+			while (streams_itr) {
+				janus_videoroom_subscriber_stream* ss = (janus_videoroom_subscriber_stream*)streams_itr->data;
+				gboolean changed = FALSE;
+				if (ss && (now - ss->simulcast_change_delay_time) > 10000000LL) {
+					if (ss->sim_context.substream_target == 2) {
+						ss->sim_context.substream_target = 1;
+						changed = TRUE;
+						JANUS_LOG(LOG_INFO, "slow_link, substream %u, substream_target %u\n", ss->sim_context.substream, ss->sim_context.substream_target);
+					} else if (ss->sim_context.substream_target == 1) {
+						ss->sim_context.substream_target = 0;
+						changed = TRUE;
+						JANUS_LOG(LOG_INFO, "slow_link, substream %u, substream_target %u\n", ss->sim_context.substream, ss->sim_context.substream_target);
+					}
+
+					if (changed) {
+						janus_videoroom_publisher_stream* ps = ss->publisher_streams ? ss->publisher_streams->data : NULL;
+						if (ps) {
+							janus_videoroom_reqpli(ps, "Simulcasting substream change estimate based");
+						}
+					}
+				}
+				streams_itr = streams_itr->next;
+			}
+			janus_mutex_unlock(&subscriber->streams_mutex);
+
 			/* Send an event on the handle to notify the application: it's
 			 * up to the application to then choose a policy and enforce it */
 			json_t *event = json_object();
@@ -11664,6 +11696,7 @@ static void *janus_videoroom_handler(void *data) {
 					stream->target_spatial_layer = 1;		/* FIXME Chrome sends 0 and 1 */
 					stream->temporal_layer = -1;
 					stream->target_temporal_layer = 2;	/* FIXME Chrome sends 0, 1 and 2 */
+					stream->simulcast_change_delay_time = janus_get_monotonic_time();
 					janus_mutex_unlock(&ps->subscribers_mutex);
 					janus_videoroom_reqpli(ps, "Subscriber switch");
 					if(unref)

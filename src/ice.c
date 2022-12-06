@@ -1905,41 +1905,19 @@ janus_slow_link_update(janus_ice_peerconnection_medium *medium, janus_ice_handle
 	/* We keep the counters in different janus_ice_stats objects, depending on the direction */
 	gboolean video = (medium->type == JANUS_MEDIA_VIDEO);
 	guint sl_lost_last_count = uplink ? medium->in_stats.sl_lost_count : medium->out_stats.sl_lost_count;
+
 	guint sl_lost_recently = (lost >= sl_lost_last_count) ? (lost - sl_lost_last_count) : 0;
-	if(slowlink_threshold > 0 && sl_lost_recently >= slowlink_threshold) {
+	if (video && uplink && slowlink_threshold > 0 && sl_lost_recently >= slowlink_threshold) {
+		JANUS_LOG(LOG_INFO, "[%"SCNu64"] sl_lost_recently >= slowlink_threshold\n", handle->handle_id);
+
 		/* Tell the plugin */
-		janus_plugin *plugin = (janus_plugin *)handle->app;
-		if(plugin && plugin->slow_link && janus_plugin_session_is_alive(handle->app_handle) &&
-				!g_atomic_int_get(&handle->destroyed))
+		janus_plugin* plugin = (janus_plugin*)handle->app;
+		if (plugin && plugin->slow_link && janus_plugin_session_is_alive(handle->app_handle) &&
+				!g_atomic_int_get(&handle->destroyed)) {
 			plugin->slow_link(handle->app_handle, medium->mindex, video, uplink);
-		/* Notify the user/application too */
-		janus_session *session = (janus_session *)handle->session;
-		if(session != NULL) {
-			json_t *event = json_object();
-			json_object_set_new(event, "janus", json_string("slowlink"));
-			json_object_set_new(event, "session_id", json_integer(session->session_id));
-			json_object_set_new(event, "sender", json_integer(handle->handle_id));
-			if(opaqueid_in_api && handle->opaque_id != NULL)
-				json_object_set_new(event, "opaque_id", json_string(handle->opaque_id));
-			json_object_set_new(event, "mid", json_string(medium->mid));
-			json_object_set_new(event, "media", json_string(video ? "video" : "audio"));
-			json_object_set_new(event, "uplink", uplink ? json_true() : json_false());
-			json_object_set_new(event, "lost", json_integer(sl_lost_recently));
-			/* Send the event */
-			JANUS_LOG(LOG_VERB, "[%"SCNu64"] Sending event to transport...; %p\n", handle->handle_id, handle);
-			janus_session_notify_event(session, event);
-			/* Finally, notify event handlers */
-			if(janus_events_is_enabled()) {
-				json_t *info = json_object();
-				json_object_set_new(info, "mid", json_string(medium->mid));
-				json_object_set_new(info, "media", json_string(video ? "video" : "audio"));
-				json_object_set_new(info, "slow_link", json_string(uplink ? "uplink" : "downlink"));
-				json_object_set_new(info, "lost_lastsec", json_integer(sl_lost_recently));
-				janus_events_notify_handlers(JANUS_EVENT_TYPE_MEDIA, JANUS_EVENT_SUBTYPE_MEDIA_SLOWLINK,
-					session->session_id, handle->handle_id, handle->opaque_id, info);
-			}
 		}
 	}
+
 	/* Update the counter */
 	if(uplink) {
 		medium->in_stats.sl_lost_count = lost;
